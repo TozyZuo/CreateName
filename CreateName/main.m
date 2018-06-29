@@ -10,6 +10,8 @@
 
 static NSInteger const NumberOfLastNameStrokes = 7;
 
+dispatch_queue_t LocalWorkQueue = NULL, NetWorkQueue = NULL;
+
 NSSet *WuGeDaJiSet;
 NSSet *WuGeJiSet;
 NSSet *WuGeBanJiSet;
@@ -307,8 +309,8 @@ typedef NS_ENUM(NSInteger, CNModelType) {
 
 @end
 
-int main(int argc, const char * argv[]) {
-
+NSUInteger LogTheBestCombinationWithNumberOfLastNameStrokes(NSInteger numberOfLastNameStrokes)
+{
     // 中华起名网的，【并没有】按照这个数理来计算
     //    • 含有15  16  23  24  29  32  33  41  52等财运数，预示：多钱财、富贵、白手可获巨财。
     //    • 含有13  16  21  23  29  31  33  39等官运数，预示：智慧仁勇、立上位、能领导众人。
@@ -320,8 +322,8 @@ int main(int argc, const char * argv[]) {
 
     for (int i = 1; i < 31; i++) {
         for (int j = 1; j < 31; j++) {
-            CNModel *model = [[CNModel alloc] initWithX:NumberOfLastNameStrokes A:i B:j];
-            if (model.priority > 15) {
+            CNModel *model = [[CNModel alloc] initWithX:numberOfLastNameStrokes A:i B:j];
+            if (model.priority > 15 /* 15以下基本就带凶了 */) {
                 [models addObject:model];
             }
         }
@@ -335,6 +337,250 @@ int main(int argc, const char * argv[]) {
     for (CNModel *model in models) {
         printf("%s", model.description.UTF8String);
     }
+
+    return models.count;
+}
+
+void GetWordsFromOdictWithNumberOfStrokesCompletion(NSInteger numberOfStrokes, void (^completion)(NSSet *words))
+{
+    dispatch_async(NetWorkQueue, ^{
+
+        printf("请求 zidian.odict.net 数据\n");
+
+        [[[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:[NSString stringWithFormat:@"http://zidian.odict.net/zongbihua-%ld/", numberOfStrokes]] completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error)
+          {
+              NSString *str = [[NSString alloc] initWithData:data encoding: NSUTF8StringEncoding];
+
+              NSMutableSet *set = [[NSMutableSet alloc] init];
+
+              NSRegularExpression *regularExpression = [NSRegularExpression regularExpressionWithPattern:@"target='_top'>[\\u4E00-\\u9FA5]</a>" options:0 error:nil];
+
+              [regularExpression enumerateMatchesInString:str options:NSMatchingReportProgress range:NSMakeRange(0, str.length) usingBlock:^(NSTextCheckingResult * _Nullable result, NSMatchingFlags flags, BOOL * _Nonnull stop)
+               {
+                   if (result) {
+                       NSString *ts = [[str substringWithRange:result.range] substringWithRange:NSMakeRange(14, 1)];
+                       [set addObject:ts];
+                   }
+               }];
+
+              printf("zidian.odict.net 解析文字%ld个\n", set.count);
+
+              if (completion) {
+                  dispatch_async(LocalWorkQueue, ^{
+                      completion(set);
+                  });
+              }
+          }] resume];
+    });
+}
+
+void GetWordsFromZdictWithNumberOfStrokesCompletion(NSInteger numberOfStrokes, NSInteger page, void (^completion)(NSSet *words))
+{
+    dispatch_async(NetWorkQueue, ^{
+
+        static NSMutableSet *set;
+        if (page == 1) {
+            set = [[NSMutableSet alloc] init];
+        }
+
+        printf("请求 www.zdic.net 数据，第%ld页\n", page);
+
+        NSString *URLString = [[NSString stringWithFormat:@"http://www.zdic.net/z/kxzd/zbh/bs/?kxbh=%ld|%ld", numberOfStrokes, page] stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:URLString]];
+        [request setValue:@"http://www.zdic.net/z/kxzd/zbh/" forHTTPHeaderField:@"Referer"];
+
+        [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error)
+          {
+              NSString *str = [[NSString alloc] initWithData:data encoding: NSUTF8StringEncoding].lowercaseString;
+
+              NSRegularExpression *regularExpression = [NSRegularExpression regularExpressionWithPattern:@"target=_blank>[\\u4E00-\\u9FA5]</a>" options:0 error:nil];
+
+              __block NSUInteger count = 0;
+
+              [regularExpression enumerateMatchesInString:str options:NSMatchingReportProgress range:NSMakeRange(0, str.length) usingBlock:^(NSTextCheckingResult * _Nullable result, NSMatchingFlags flags, BOOL * _Nonnull stop)
+               {
+                   if (result) {
+                       NSString *ts = [[str substringWithRange:result.range] substringWithRange:NSMakeRange(14, 1)];
+                       [set addObject:ts];
+                       count++;
+                   }
+               }];
+
+              printf("www.zdic.net 第%ld页解析文字%ld个，共%ld个\n", page, count, set.count);
+
+              if ([str containsString:@"atend"]) {
+                  printf("www.zdic.net 全部请求并解析完毕，共%ld个\n", set.count);
+                  if (completion) {
+                      dispatch_async(LocalWorkQueue, ^{
+                          completion(set);
+                      });
+                  }
+              } else {
+                  usleep(500000);
+                  GetWordsFromZdictWithNumberOfStrokesCompletion(numberOfStrokes, page + 1, completion);
+              }
+          }] resume];
+    });
+}
+
+void SearchFiveElementsAndNumberOfStrokesForWordAndCompletion(NSString *word, void(^completion)(NSString *fiveElements, NSInteger numberOfStrokes))
+{
+    dispatch_async(NetWorkQueue, ^{
+
+        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://cm.k366.com/chazidange.asp"]];
+        request.HTTPMethod = @"POST";
+        request.HTTPBody = [[NSString stringWithFormat:@"zi=%@&btnAdd=立刻显示", word] dataUsingEncoding:CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingGB_18030_2000)];
+
+        [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error)
+          {
+              dispatch_async(NetWorkQueue, ^{
+
+                  NSString *str = [[NSString alloc] initWithData:data encoding: CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingGB_18030_2000)];
+                  NSRange range = NSMakeRange([str rangeOfString:@"五行：</td><td bgcolor=ffffff align=\"center\">"].location + 42, 1);
+                  if (range.location == NSNotFound) {
+
+                  }
+                  NSString *f = [str substringWithRange:range];
+                  NSUInteger startLocation = [str rangeOfString:@"姓名学笔画：</td><td bgcolor=ffffff align=\"center\">"].location + 45;
+                  NSUInteger endLocation = [str rangeOfString:@"<" options:0 range:NSMakeRange(startLocation, str.length - startLocation)].location;
+                  NSInteger numberOfStrokes = [str substringWithRange:NSMakeRange(startLocation, endLocation - startLocation)].integerValue;
+                  if (completion) {
+                      completion(f, numberOfStrokes);
+                  }
+              });
+          }] resume];
+    });
+}
+
+void SearchWordsWithNumberOfStrokesAndOutputPathAndCompletion(NSInteger numberOfStrokesToCheck, NSString *outputPath)
+{
+    if (!LocalWorkQueue || !NetWorkQueue) {
+        LocalWorkQueue = dispatch_queue_create("LocalWorkQueue", DISPATCH_QUEUE_SERIAL);
+        NetWorkQueue = dispatch_queue_create("NetWorkQueue", DISPATCH_QUEUE_SERIAL);
+    }
+
+    outputPath = outputPath.stringByDeletingPathExtension;
+
+    dispatch_semaphore_t workSemaphore = dispatch_semaphore_create(0);
+
+    dispatch_async(LocalWorkQueue, ^{
+
+        printf("开始查询康熙字典%ld笔画的字\n", numberOfStrokesToCheck);
+
+        GetWordsFromOdictWithNumberOfStrokesCompletion(numberOfStrokesToCheck, ^(NSSet *oWords) {
+
+            GetWordsFromZdictWithNumberOfStrokesCompletion(numberOfStrokesToCheck, 1, ^(NSSet *zWords) {
+
+                NSMutableSet *allWords = oWords.mutableCopy;
+                NSMutableSet *intersectWords = oWords.mutableCopy;
+                [intersectWords intersectSet:zWords];
+                [allWords unionSet:zWords];
+
+                printf("全部请求完毕，相同字%ld个，共%ld个\n进行五行属性查询...\n", intersectWords.count, allWords.count);
+
+                NSDictionary<NSString *, NSMutableSet *> *wordsDic = @{
+                    @"金": [NSMutableSet set],
+                    @"木": [NSMutableSet set],
+                    @"水": [NSMutableSet set],
+                    @"火": [NSMutableSet set],
+                    @"土": [NSMutableSet set],
+                };
+
+                NSMutableSet *wrongWords = [NSMutableSet set];
+                CGFloat total = (CGFloat)allWords.count;
+
+                __block NSUInteger wrongStrokes = 0;
+
+                dispatch_semaphore_t loopSemaphore = dispatch_semaphore_create(0);
+                for (NSString *word in allWords) {
+                    SearchFiveElementsAndNumberOfStrokesForWordAndCompletion(word, ^(NSString *fiveElements, NSInteger numberOfStrokes)
+                    {
+                        // NetworkQueue
+
+                        if (numberOfStrokes == numberOfStrokesToCheck) {
+                            NSMutableSet *set = wordsDic[fiveElements];
+                            if (set) {
+                                [set addObject:word];
+                            } else {
+                                NSLog(@"%@%@属性未找到", word, fiveElements);
+                            }
+                        } else {
+                            if (numberOfStrokes) {
+                                wrongStrokes++;
+                            }
+                            [wrongWords addObject:[NSString stringWithFormat:@"%@(%ld%@)", word, numberOfStrokes, fiveElements]];
+                        }
+
+                        static NSUInteger progress = 0;
+                        printf("查询进度 %.2f%%\n", ++progress/total*100);
+
+                        usleep(100000);
+                        dispatch_semaphore_signal(loopSemaphore);
+                    });
+                    dispatch_semaphore_wait(loopSemaphore, DISPATCH_TIME_FOREVER);
+                }
+
+                printf("全部查询完毕，其中，金%ld个，木%ld个，水%ld个，火%ld个，土%ld个，错误笔画字数%ld个(一般由于网站返回的是字本身的笔画数，而非康熙字典笔画数)，未查询到属性%ld个\n", wordsDic[@"金"].count, wordsDic[@"木"].count, wordsDic[@"水"].count, wordsDic[@"火"].count, wordsDic[@"土"].count, wrongStrokes, wrongWords.count - wrongStrokes);
+
+                if (![NSKeyedArchiver archiveRootObject:wordsDic toFile:[NSString stringWithFormat:@"%@/wordsDicBackup_%ld", outputPath, numberOfStrokesToCheck]]) {
+                    NSLog(@"备份wordsDic失败，建议此处加断点手动备份");
+                }
+
+                printf("进行繁简转换...\n");
+
+                NSMutableString *finalString = [[NSMutableString alloc] init];
+                [wordsDic enumerateKeysAndObjectsUsingBlock:^(NSString *key, NSSet *obj, BOOL * _Nonnull stop)
+                 {
+                     NSMutableString *str = [[NSMutableString alloc] initWithString:@""];
+                     for (NSString *ts in obj) {
+                         NSString *ss = [ts stringByApplyingTransform:@"Hant-Hans" reverse:NO];
+                         if ([ss isEqualToString:ts]) {
+                             [str appendFormat:@"%@     ", ts];
+                         } else {
+                             [str appendFormat:@"%@(%@) ", ss, ts];
+                         }
+                     }
+
+                     [finalString appendFormat:@"%@:\n\n%@\n\n", key, str];
+                 }];
+
+                NSString *file = [NSString stringWithFormat:@"%@/words_%ld.txt", outputPath, numberOfStrokesToCheck];
+                [finalString writeToFile:file atomically:NO encoding:NSUTF8StringEncoding error:nil];
+
+                printf("转换完毕，结果保存在 %s\n", file.UTF8String);
+
+                dispatch_semaphore_signal(workSemaphore);
+            });
+        });
+    });
+
+    dispatch_semaphore_wait(workSemaphore, DISPATCH_TIME_FOREVER);
+}
+
+// 只能查属性，不能查笔画，留着备用吧
+void SearchFiveElementsForWordAndCompletion(NSString *word, void(^completion)(NSString *fiveElements))
+{
+    dispatch_async(NetWorkQueue, ^{
+        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"http://xh.5156edu.com/sowx.php"]];
+        request.HTTPMethod = @"POST";
+        request.HTTPBody = [[NSString stringWithFormat:@"f_key=%@&B1=查询", word] dataUsingEncoding:CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingGB_18030_2000)];
+        [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error)
+          {
+              NSString *str = [[NSString alloc] initWithData:data encoding: CFStringConvertEncodingToNSStringEncoding(kCFStringEncodingGB_18030_2000)];
+              NSString *f = [str substringWithRange:NSMakeRange([str rangeOfString:@" 五行属性："].location + 6, 1)];
+              if (completion) {
+                  completion(f);
+              }
+          }] resume];
+    });
+}
+
+int main(int argc, const char * argv[]) {
+
+    LogTheBestCombinationWithNumberOfLastNameStrokes(NumberOfLastNameStrokes);
+
+#warning 这里输入想要查询的笔画，比如给出组合 10A + 11B，输入10或11就可以了
+//    SearchWordsWithNumberOfStrokesAndOutputPathAndCompletion(10, [@"~/Desktop" stringByExpandingTildeInPath]);
 
     return 0;
 }
