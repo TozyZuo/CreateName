@@ -490,6 +490,7 @@ void SearchWordsWithNumberOfStrokesAndOutputPathAndCompletion(NSInteger numberOf
                 CGFloat total = (CGFloat)allWords.count;
 
                 __block NSUInteger wrongStrokes = 0;
+                __block NSUInteger progress = 0;
 
                 dispatch_semaphore_t loopSemaphore = dispatch_semaphore_create(0);
                 for (NSString *word in allWords) {
@@ -511,7 +512,6 @@ void SearchWordsWithNumberOfStrokesAndOutputPathAndCompletion(NSInteger numberOf
                             [wrongWords addObject:[NSString stringWithFormat:@"%@(%ld%@)", word, numberOfStrokes, fiveElements]];
                         }
 
-                        static NSUInteger progress = 0;
                         printf("查询进度 %.2f%%\n", ++progress/total*100);
 
                         usleep(100000);
