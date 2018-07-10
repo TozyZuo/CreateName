@@ -51,6 +51,8 @@ typedef NS_ENUM(NSInteger, CNModelType) {
 
 + (void)load
 {
+#if 1
+    // 百度百科
     // 大吉 1, 3, 7, 11, 17, 23, 24, 29, 31, 33, 41, 47, 52, 57, 61, 67, 77, 81,
     // 吉 13, 15, 16, 21, 35, 37, 39, 45, 48, 71, 72, 73, 75, 79,
     // 半吉 5, 6, 27, 30, 51,
@@ -58,6 +60,17 @@ typedef NS_ENUM(NSInteger, CNModelType) {
     WuGeDaJiSet = [NSSet setWithObjects:@1, @3, @7, @11, @17, @23, @24, @29, @31, @33, @41, @47, @52, @57, @61, @67, @77, @81, nil];
     WuGeJiSet = [NSSet setWithObjects:@13, @15, @16, @21, @35, @37, @39, @45, @48, @71, @72, @73, @75, @79, nil];
     WuGeBanJiSet = [NSSet setWithObjects:@5, @6, @27, @30, @51, nil];
+#else
+    // 自筛
+    // 大吉：3、5、11、13、15、21、23、24、31、41、47、48、52、63、65、67、68、81
+    // 吉：6、16、33、37、45、57
+    // 半吉：7、8、17、18、25、29、30、38、39、51、58、61
+    
+    WuGeDaJiSet = [NSSet setWithObjects:@3, @5, @11, @13, @15, @21, @23, @24, @31, @41, @47, @48, @52, @63, @65, @67, @68, @81, nil];
+    WuGeJiSet = [NSSet setWithObjects:@6, @16, @33, @37, @45, @57, nil];
+    WuGeBanJiSet = [NSSet setWithObjects:@7, @8, @17, @18, @25, @29, @30, @38, @39, @51, @58, @61, nil];
+#endif
+
     NSMutableSet *mSet = [[NSMutableSet alloc] init];
     [mSet unionSet:WuGeDaJiSet];
     [mSet unionSet:WuGeJiSet];
@@ -156,7 +169,7 @@ typedef NS_ENUM(NSInteger, CNModelType) {
         // 过滤不吉利的五格数
         for (NSNumber *number in fourGeArray) {
             if (![WuGeAllJiSet containsObject:number]) {
-                return self;
+                return nil;
             }
         }
 
@@ -408,7 +421,9 @@ void GetWordsFromZdictWithNumberOfStrokesCompletion(NSInteger numberOfStrokes, N
 
               printf("www.zdic.net 第%ld页解析文字%ld个，共%ld个\n", page, count, set.count);
 
-              if ([str containsString:@"atend"]) {
+              if (![str containsString:@"下一頁"] || // 只有一页
+                  [str containsString:@"atend"])    // 多页到最后一页
+              {
                   printf("www.zdic.net 全部请求并解析完毕，共%ld个\n", set.count);
                   if (completion) {
                       dispatch_async(LocalWorkQueue, ^{
